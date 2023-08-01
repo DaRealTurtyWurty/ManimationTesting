@@ -1,7 +1,53 @@
-import math
-
 from manim import *
 from numpy import interp
+from PIL import Image
+import os
+
+
+def crop_image_array(original_image_array, x, y, width, height):
+    cropped_image_array = original_image_array[y:y+height, x:x+width]
+    padded_cropped_image_array = np.zeros_like(original_image_array)
+    padded_cropped_image_array[y:y+cropped_image_array.shape[0], x:x+cropped_image_array.shape[1]] = cropped_image_array
+    return padded_cropped_image_array
+
+
+def clamp(minimum, x, maximum):
+    return max(minimum, min(x, maximum))
+
+
+def get_or_create(texture_path, output_folder, target_u, target_v):
+    # Create the output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Define the cropping size
+    crop_size = 256
+
+    # Define the filename for the cropped image
+    output_filename = f"cropped_{target_u}_{target_v}.png"
+    output_filepath = os.path.join(output_folder, output_filename)
+
+    if os.path.exists(output_filepath):
+        # If the cropped image already exists, return its filepath
+        return output_filepath
+    else:
+        # If the cropped image does not exist, prepare it
+        # Load the texture image using Pillow
+        texture = Image.open(texture_path)
+
+        # Calculate the cropping box
+        # Ensure target_u and target_v are within valid bounds
+        target_u = max(0, min(target_u, texture.width - crop_size))
+        target_v = max(0, min(target_v, texture.height - crop_size))
+        crop_box = (target_u, texture.height - target_v - crop_size, target_u + crop_size, texture.height - target_v)
+
+        # Crop the texture image
+        cropped_texture = texture.crop(crop_box)
+
+        # Save the cropped image to the output folder
+        cropped_texture.save(output_filepath)
+
+        # Return the filepath to the newly created cropped image
+        return output_filepath
 
 
 class BlitDemonstration(Scene):
@@ -62,6 +108,14 @@ class BlitDemonstration(Scene):
             self.play(xPos.animate.set_value(1028), run_time=2.5, rate_func=linear)
             self.play(topRightDot.animate.scale(1.5), run_time=0.5)
 
+            newTopRightDot = Dot(color=RED).shift(UP * 2 + RIGHT * 3).scale(1.5)
+            newTopRightText = Text("(1028, 0)", color=RED).next_to(newTopRightDot, UP * 0.5).scale(0.5)
+            self.play(
+                ReplacementTransform(topRightDot, newTopRightDot),
+                ReplacementTransform(topRightText, newTopRightText),
+                run_time=0
+            )
+
             self.wait(1)
 
             bottomRightDot = always_redraw(
@@ -86,6 +140,15 @@ class BlitDemonstration(Scene):
             self.play(Create(bottomRightDot), Create(bottomRightText), run_time=0.1)
             self.play(yPos.animate.set_value(768), run_time=2.5, rate_func=linear)
             self.play(bottomRightDot.animate.scale(1.5), run_time=0.5)
+
+            newBottomRightDot = Dot(color=RED).shift(DOWN * 2 + RIGHT * 3).scale(1.5)
+            newBottomRightText = Text("(1028, 768)", color=RED).next_to(newBottomRightDot, DOWN).scale(0.5)
+            self.play(
+                ReplacementTransform(bottomRightDot, newBottomRightDot),
+                ReplacementTransform(bottomRightText, newBottomRightText),
+                newBottomRightText.animate.shift(UP * 0.25 + RIGHT * 0.25),
+                run_time=0
+            )
 
         def demonstrate_blit():
             blitCode = Text(
@@ -161,38 +224,55 @@ class BlitDemonstration(Scene):
             self.play(xValue.animate.set_value(0), yValue.animate.set_value(0), run_time=0.75, rate_func=smooth)
             self.wait(1)
 
-            widthArrow = DoubleArrow(
-                start=LEFT * 3 + UP * 2 + UP * 0.15,
-                end=RIGHT * 3 + UP * 2 + UP * 0.15,
-                color=BLUE,
-                stroke_width=2,
-                tip_length=0.25
-            )
+            uValue = ValueTracker(0)
+            vValue = ValueTracker(0)
 
-            widthText = Text(
-                text="1028",
-                font="Consolas",
-                color=BLUE
-            ).scale(0.5).next_to(widthArrow, UP * 0.15)
+            updatingUVBlitCode = always_redraw(lambda: Text(
+                f"blit(TEXTURE, {int(xValue.get_value())}, {int(yValue.get_value())}, {int(uValue.get_value())}, {int(vValue.get_value())}, 256, 256)",
+                font="Consolas"
+            ).scale(0.5).to_corner(UL).shift(DOWN * 0.5))
 
-            self.play(Create(widthArrow), Write(widthText), run_time=0.5)
+            self.play(ReplacementTransform(updatingPositionBlitCode, updatingUVBlitCode), run_time=0.01)
             self.wait(1)
 
-            heightArrow = DoubleArrow(
-                start=LEFT * 3 + UP * 2 + LEFT * 0.15,
-                end=LEFT * 3 + DOWN * 2 + LEFT * 0.15,
-                color=GREEN,
-                stroke_width=2,
-                tip_length=0.25
-            )
+            def update_uv_blit_image(mob):
+                # Calculate the target u and v values from the trackers
+                target_u = clamp(int(uValue.get_value()), 0, 256)
+                target_v = clamp(int(vValue.get_value()), 0, 256)
 
-            heightText = Text(
-                text="768",
-                font="Consolas",
-                color=GREEN
-            ).scale(0.5).next_to(heightArrow, LEFT * 0.05).rotate(PI / 2)
+                # Crop the image to the target u and v values
+                cropped_image_array = crop_image_array(uvBlitImage.get_pixel_array(), target_u, target_v, 256, 256)
 
-            self.play(Create(heightArrow), Write(heightText), run_time=0.5)
+                # Update the ImageMobject with the new texture
+                mob.become(ImageMobject(np.uint8(cropped_image_array)))
+
+                # Calculate the position using xValue and yValue (assuming these trackers are defined elsewhere)
+                mob.shift(
+                    UP * 2 + DOWN * guiImage.get_height() / 2 +
+                    LEFT * 3 + RIGHT * guiImage.get_width() / 2 +
+                    RIGHT * interp(
+                        xValue.get_value(),
+                        [0, 1028],
+                        [0, 5.5 - guiImage.get_width()]
+                    ) +
+                    DOWN * interp(
+                        yValue.get_value(),
+                        [0, 768],
+                        [0, 4 - guiImage.get_height()]
+                    ))
+
+            uvBlitImage = ImageMobject("assets/images/sample_gui.png")
+            uvBlitImage.add_updater(update_uv_blit_image)
+            self.play(ReplacementTransform(blitImage, uvBlitImage), run_time=0.01)
+
+            self.play(uValue.animate.set_value(256), run_time=2.5, rate_func=linear)
+            self.play(uValue.animate.set_value(0), run_time=0.75, rate_func=smooth)
+            self.wait(1)
+            self.play(vValue.animate.set_value(256), run_time=2.5, rate_func=linear)
+            self.play(vValue.animate.set_value(0), run_time=0.75, rate_func=smooth)
+            self.wait(1)
+
+            self.wait(5)
 
         window = create_window()
         self.wait(0.5)
@@ -200,4 +280,3 @@ class BlitDemonstration(Scene):
         self.wait(0.5)
         demonstrate_blit()
         self.wait(0.5)
-
